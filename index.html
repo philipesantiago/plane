@@ -137,28 +137,6 @@
       transform: scale(0.98);
     }
 
-    #restartBtn {
-      position: fixed;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      display: none;
-      padding: 14px 22px;
-      background: rgba(0, 0, 0, 0.65);
-      border: 2px solid #00d8ff;
-      border-radius: 14px;
-      color: #fff;
-      font-size: 18px;
-      font-weight: 900;
-      z-index: 35;
-      min-width: 180px;
-      text-align: center;
-    }
-
-    #restartBtn.visible {
-      display: inline-block;
-    }
-
     #overlay {
       position: fixed;
       inset: 0;
@@ -177,6 +155,37 @@
     #overlay.hidden {
       display: none;
     }
+
+    #overlayContent {
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      pointer-events: none;
+    }
+
+    #overlayMessage {
+      pointer-events: none;
+    }
+
+    #restartBtn {
+      display: none;
+      padding: 14px 22px;
+      background: rgba(0, 0, 0, 0.65);
+      border: 2px solid #00d8ff;
+      border-radius: 14px;
+      color: #fff;
+      font-size: 18px;
+      font-weight: 900;
+      min-width: 180px;
+      pointer-events: auto;
+      z-index: 35;
+    }
+
+    #restartBtn.visible {
+      display: inline-block;
+    }
   </style>
 </head>
 <body>
@@ -184,7 +193,7 @@
     <div id="score">Pontos: 0</div>
     <div id="hud">Velocidade: 0 | Altitude: 0 | Distância: 0</div>
     <div class="small">
-      No celular: toque para ativar aceleração/inclinação. Se o Brave bloquear sensores, o controle por toque será ativado automaticamente.
+      No celular: toque para ativar aceleração/inclinação. Se o navegador bloquear sensores, o controle por toque será ativado automaticamente.
       No PC: A/D, W/S, Shift e Espaço.
     </div>
   </div>
@@ -196,9 +205,13 @@
 
   <button id="fullscreenBtn" class="btn" aria-label="Tela cheia">⛶</button>
   <button id="turboBtn" class="btn" aria-label="Turbo">TURBO</button>
-  <button id="restartBtn" class="btn">REINICIAR</button>
 
-  <div id="overlay" class="hidden"></div>
+  <div id="overlay" class="hidden">
+    <div id="overlayContent">
+      <div id="overlayMessage"></div>
+      <button id="restartBtn" class="btn">REINICIAR</button>
+    </div>
+  </div>
 
   <script type="module">
     import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
@@ -209,6 +222,7 @@
     const scoreEl = document.getElementById("score");
     const hudEl = document.getElementById("hud");
     const overlayEl = document.getElementById("overlay");
+    const overlayMessageEl = document.getElementById("overlayMessage");
     const pauseBtn = document.getElementById("pauseBtn");
     const calibrateBtn = document.getElementById("calibrateBtn");
     const turboBtn = document.getElementById("turboBtn");
@@ -260,10 +274,13 @@
     let hasOrientation = false;
     let needsCalibration = false;
 
-    let smoothBeta = 0;
-    let smoothGamma = 0;
-    let baseBeta = 0;
-    let baseGamma = 0;
+    let smoothPitchDeg = 0;
+    let smoothYawDeg = 0;
+    let basePitchDeg = 0;
+    let baseYawDeg = 0;
+
+    let screenOrientationAngle = 0;
+    let orientationMapping = null;
 
     let sensorMode = null; // null, "orientation" ou "motion"
     let motionControlsActive = false;
@@ -380,6 +397,9 @@
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+
+      // Recalcula orientação da tela após resize/rotacionamentos.
+      onScreenOrientationChanged();
     });
 
     pauseBtn.addEventListener("click", () => {
@@ -421,6 +441,14 @@
       event.preventDefault();
       toggleFullscreen();
     });
+
+    updateScreenOrientation();
+
+    if (window.screen && window.screen.orientation && typeof window.screen.orientation.addEventListener === "function") {
+      window.screen.orientation.addEventListener("change", onScreenOrientationChanged);
+    }
+
+    window.addEventListener("orientationchange", onScreenOrientationChanged);
 
     init();
 
@@ -624,30 +652,24 @@
     }
 
     function applyMobileControls(dt) {
-      const gammaDelta = clamp(
-        normalizeDeg180(smoothGamma - baseGamma),
-        -MOBILE_MAX_TILT,
-        MOBILE_MAX_TILT
-      );
+      const pitchDelta = normalizeDeg180(smoothPitchDeg - basePitchDeg);
+      const yawDelta = normalizeDeg180(smoothYawDeg - baseYawDeg);
 
-      const betaDelta = clamp(
-        normalizeDeg180(smoothBeta - baseBeta),
-        -MOBILE_MAX_TILT,
-        MOBILE_MAX_TILT
-      );
-
-      let yawInput = 0;
-      if (gammaDelta > MOBILE_DEADZONE) {
-        yawInput = gammaDelta - MOBILE_DEADZONE;
-      } else if (gammaDelta < -MOBILE_DEADZONE) {
-        yawInput = gammaDelta + MOBILE_DEADZONE;
-      }
+      const pitchClamped = clamp(pitchDelta, -MOBILE_MAX_TILT, MOBILE_MAX_TILT);
+      const yawClamped = clamp(yawDelta, -MOBILE_MAX_TILT, MOBILE_MAX_TILT);
 
       let pitchInput = 0;
-      if (betaDelta > MOBILE_DEADZONE) {
-        pitchInput = betaDelta - MOBILE_DEADZONE;
-      } else if (betaDelta < -MOBILE_DEADZONE) {
-        pitchInput = betaDelta + MOBILE_DEADZONE;
+      if (pitchClamped > MOBILE_DEADZONE) {
+        pitchInput = pitchClamped - MOBILE_DEADZONE;
+      } else if (pitchClamped < -MOBILE_DEADZONE) {
+        pitchInput = pitchClamped + MOBILE_DEADZONE;
+      }
+
+      let yawInput = 0;
+      if (yawClamped > MOBILE_DEADZONE) {
+        yawInput = yawClamped - MOBILE_DEADZONE;
+      } else if (yawClamped < -MOBILE_DEADZONE) {
+        yawInput = yawClamped + MOBILE_DEADZONE;
       }
 
       if (yawInput !== 0) {
@@ -921,13 +943,15 @@
       score += item.type === "star" ? 10 : 50;
     }
 
-    function showOverlay(text) {
-      overlayEl.innerHTML = text;
+    function showOverlay(text, showRestart = false) {
+      overlayMessageEl.innerHTML = text;
+      restartBtn.classList.toggle("visible", showRestart);
       overlayEl.classList.remove("hidden");
     }
 
     function hideOverlay() {
       overlayEl.classList.add("hidden");
+      restartBtn.classList.remove("visible");
     }
 
     function updatePauseButton() {
@@ -945,7 +969,7 @@
       showOverlay(`
         Jogo pausado.<br><br>
         Pressione Espaço ou toque em ▶ para continuar.
-      `);
+      `, false);
     }
 
     function resume() {
@@ -966,14 +990,10 @@
         Você bateu no terreno.<br><br>
         Pontos finais: ${score}<br>
         Distância: ${Math.round(distance)} m
-      `);
-
-      restartBtn.classList.add("visible");
+      `, true);
     }
 
     function restart() {
-      restartBtn.classList.remove("visible");
-
       for (const chunk of chunks.values()) {
         scene.remove(chunk.group);
         chunk.terrain.geometry.dispose();
@@ -1022,14 +1042,13 @@
         showOverlay(`
           Tela cheia indisponível neste navegador.<br><br>
           Use um navegador compatível com fullscreen.
-        `);
+        `, false);
         setTimeout(hideOverlay, 2200);
         return;
       }
 
       const isFullscreen =
         doc.fullscreenElement ||
-        doc.webkitFullscreenElement ||
         doc.webkitFullscreenElement;
 
       try {
@@ -1055,6 +1074,59 @@
       }
     }
 
+    function normalizeAngle360(angle) {
+      angle = angle % 360;
+      if (angle < 0) angle += 360;
+      return angle;
+    }
+
+    function getCurrentScreenOrientationAngle() {
+      let angle = 0;
+
+      if (window.screen && window.screen.orientation && typeof window.screen.orientation.angle === "number") {
+        angle = window.screen.orientation.angle;
+      } else if (typeof window.orientation === "number") {
+        angle = window.orientation;
+      } else {
+        // Fallback simples: se a janela estiver mais larga do que alta, assumimos paisagem.
+        angle = window.innerWidth >= window.innerHeight ? 90 : 0;
+      }
+
+      return normalizeAngle360(angle);
+    }
+
+    function getOrientationMapping(angle) {
+      angle = normalizeAngle360(angle);
+      const rad = angle * Math.PI / 180;
+      const c = Math.cos(rad);
+      const s = Math.sin(rad);
+
+      return {
+        angle,
+        pitchBeta: c,
+        pitchGamma: s,
+        yawBeta: -s,
+        yawGamma: c
+      };
+    }
+
+    function updateScreenOrientation() {
+      screenOrientationAngle = getCurrentScreenOrientationAngle();
+      orientationMapping = getOrientationMapping(screenOrientationAngle);
+    }
+
+    function resetMobileBaseFromCurrentOrientation() {
+      if (hasOrientation) {
+        basePitchDeg = smoothPitchDeg;
+        baseYawDeg = smoothYawDeg;
+      }
+    }
+
+    function onScreenOrientationChanged() {
+      updateScreenOrientation();
+      resetMobileBaseFromCurrentOrientation();
+    }
+
     function startMobileControls() {
       paused = true;
       updatePauseButton();
@@ -1063,8 +1135,9 @@
 
       showOverlay(`
         Toque na tela para tentar ativar aceleração/inclinação.<br><br>
+        O jogo detecta automaticamente retrato/paisagem.<br>
         Se o navegador bloquear sensores, o controle por toque será ativado automaticamente.
-      `);
+      `, false);
 
       window.addEventListener("pointerdown", attemptEnableOrientation, { passive: true });
     }
@@ -1083,7 +1156,7 @@
           showOverlay(`
             Sensores ativados, mas aguardando calibração.<br><br>
             Segure o celular na posição de pilotagem.
-          `);
+          `, false);
         }
         return;
       }
@@ -1097,7 +1170,7 @@
           Sensores ativados.<br><br>
           Segure o celular na posição de pilotagem.
           O jogo começará após a calibração automática.
-        `);
+        `, false);
 
         startOrientationFallbackTimeout();
       } else {
@@ -1107,7 +1180,7 @@
           O navegador bloqueou o acesso aos sensores.<br><br>
           ${lastSensorDebug}<br><br>
           Desative Shields do Brave para este site ou use controle por toque.
-        `);
+        `, false);
 
         enableTouchSteering();
       }
@@ -1177,6 +1250,18 @@
       }, 2500);
     }
 
+    function transformOrientationToScreenControl(betaDeg, gammaDeg) {
+      const mapping = orientationMapping || getOrientationMapping(screenOrientationAngle);
+
+      const pitchDeg = mapping.pitchBeta * betaDeg + mapping.pitchGamma * gammaDeg;
+      const yawDeg = mapping.yawBeta * betaDeg + mapping.yawGamma * gammaDeg;
+
+      return {
+        pitchDeg: normalizeDeg180(pitchDeg),
+        yawDeg: normalizeDeg180(yawDeg)
+      };
+    }
+
     function onDeviceOrientation(event) {
       if (event.beta === null || event.gamma === null) return;
 
@@ -1185,16 +1270,15 @@
       clearTimeout(orientationTimeout);
       sensorMode = "orientation";
 
-      const rawBeta = normalizeDeg180(event.beta);
-      const rawGamma = normalizeDeg180(event.gamma);
+      const transformed = transformOrientationToScreenControl(event.beta, event.gamma);
 
       if (!hasOrientation) {
-        smoothBeta = rawBeta;
-        smoothGamma = rawGamma;
+        smoothPitchDeg = transformed.pitchDeg;
+        smoothYawDeg = transformed.yawDeg;
         hasOrientation = true;
       } else {
-        smoothBeta = lerpDeg(smoothBeta, rawBeta, 0.22);
-        smoothGamma = lerpDeg(smoothGamma, rawGamma, 0.22);
+        smoothPitchDeg = lerpDeg(smoothPitchDeg, transformed.pitchDeg, 0.22);
+        smoothYawDeg = lerpDeg(smoothYawDeg, transformed.yawDeg, 0.22);
       }
 
       if (mobileControlsActive && needsCalibration) {
@@ -1228,20 +1312,18 @@
       // Se não houver gravidade razoável, ignora.
       if (magnitude < 1.5) return;
 
-      // Estimativa de pitch e roll a partir do acelerômetro.
       const betaDeg = Math.atan2(-gy, Math.hypot(gx, gz)) * 180 / Math.PI;
       const gammaDeg = Math.atan2(gx, gz) * 180 / Math.PI;
 
-      const rawBeta = normalizeDeg180(betaDeg);
-      const rawGamma = normalizeDeg180(gammaDeg);
+      const transformed = transformOrientationToScreenControl(betaDeg, gammaDeg);
 
       if (!hasOrientation) {
-        smoothBeta = rawBeta;
-        smoothGamma = rawGamma;
+        smoothPitchDeg = transformed.pitchDeg;
+        smoothYawDeg = transformed.yawDeg;
         hasOrientation = true;
       } else {
-        smoothBeta = lerpDeg(smoothBeta, rawBeta, 0.25);
-        smoothGamma = lerpDeg(smoothGamma, rawGamma, 0.25);
+        smoothPitchDeg = lerpDeg(smoothPitchDeg, transformed.pitchDeg, 0.25);
+        smoothYawDeg = lerpDeg(smoothYawDeg, transformed.yawDeg, 0.25);
       }
 
       sensorMode = "motion";
@@ -1256,8 +1338,8 @@
     function calibrateMobile() {
       if (!hasOrientation || !mobileControlsActive) return;
 
-      baseBeta = smoothBeta;
-      baseGamma = smoothGamma;
+      basePitchDeg = smoothPitchDeg;
+      baseYawDeg = smoothYawDeg;
 
       const wasInitialCalibration = needsCalibration;
       needsCalibration = false;
@@ -1290,7 +1372,7 @@
         Toque e arraste na tela:<br>
         direita/esquerda controla yaw<br>
         cima/baixo controla pitch
-      `);
+      `, false);
 
       setTimeout(hideOverlay, 2500);
     }
