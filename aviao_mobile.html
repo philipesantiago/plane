@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Avião 3D Infinito Mobile</title>
+  <style>
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: Arial, Helvetica, sans-serif;
+      touch-action: none;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #ui {
+      position: fixed;
+      top: 74px;
+      left: 12px;
+      color: #fff;
+      pointer-events: none;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+      z-index: 10;
+    }
+
+    #ui > div {
+      background: rgba(0, 0, 0, 0.38);
+      border-radius: 10px;
+      padding: 7px 10px;
+      margin-bottom: 6px;
+      font-size: 15px;
+      line-height: 1.25;
+      max-width: 340px;
+    }
+
+    #ui .small {
+      font-size: 13px;
+      max-width: 340px;
+      opacity: 0.95;
+    }
+
+    .btn {
+      font-family: inherit;
+      color: #fff;
+      background: rgba(15, 15, 20, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 12px;
+      cursor: pointer;
+      user-select: none;
+      touch-action: manipulation;
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    #topButtons {
+      position: fixed;
+      top: 10px;
+      left: 12px;
+      display: none;
+      gap: 8px;
+      z-index: 30;
+    }
+
+    body.mobile #topButtons {
+      display: flex;
+    }
+
+    body.mobile:not(.ready) #topButtons {
+      display: none !important;
+    }
+
+    .icon-btn {
+      min-width: 46px;
+      height: 44px;
+      padding: 0 12px;
+      font-size: 22px;
+      line-height: 44px;
+    }
+
+    #calibrateBtn {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 44px;
+    }
+
+    #turboBtn {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 1px;
+      background: rgba(0, 216, 255, 0.18);
+      border: 2px solid rgba(0, 216, 255, 0.65);
+      color: #fff;
+    }
+
+    body.mobile #turboBtn {
+      display: flex;
+    }
+
+    body.mobile:not(.ready) #turboBtn {
+      display: none !important;
+    }
+
+    #turboBtn:active {
+      background: rgba(0, 216, 255, 0.38);
+      transform: scale(0.98);
+    }
+
+    #restartBtn {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      padding: 14px 22px;
+      background: rgba(0, 0, 0, 0.65);
+      border: 2px solid #00d8ff;
+      border-radius: 14px;
+      color: #fff;
+      font-size: 18px;
+      font-weight: 900;
+      z-index: 35;
+      min-width: 180px;
+      text-align: center;
+    }
+
+    #restartBtn.visible {
+      display: inline-block;
+    }
+
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.58);
+      font-size: 20px;
+      padding: 24px;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    #overlay.hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div id="score">Pontos: 0</div>
+    <div id="hud">Velocidade: 0 | Altitude: 0 | Distância: 0</div>
+    <div class="small">
+      No celular: ative o acelerômetro, use a inclinação do aparelho para controlar o avião e toque em TURBO.
+      No PC: A/D, W/S, Shift e Espaço.
+    </div>
+  </div>
+
+  <div id="topButtons">
+    <button id="pauseBtn" class="btn icon-btn" aria-label="Pausar">⏸</button>
+    <button id="calibrateBtn" class="btn icon-btn" aria-label="Calibrar acelerômetro">Calibrar</button>
+  </div>
+
+  <button id="turboBtn" class="btn" aria-label="Turbo">TURBO</button>
+  <button id="restartBtn" class="btn">REINICIAR</button>
+
+  <div id="overlay" class="hidden"></div>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+    const CHUNK = 100;
+    const VIEW = 3;
+
+    const scoreEl = document.getElementById("score");
+    const hudEl = document.getElementById("hud");
+    const overlayEl = document.getElementById("overlay");
+    const pauseBtn = document.getElementById("pauseBtn");
+    const calibrateBtn = document.getElementById("calibrateBtn");
+    const turboBtn = document.getElementById("turboBtn");
+    const restartBtn = document.getElementById("restartBtn");
+
+    const hasTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+    const hasOrientationSupport = ("DeviceOrientationEvent" in window);
+    const uaMobile = /Android|iPhone|iPad|iPod|Mobile|Silk|Opera Mini/i.test(navigator.userAgent);
+
+    const isMobile = uaMobile || (hasTouch && hasOrientationSupport);
+    if (isMobile) {
+      document.body.classList.add("mobile");
+    }
+
+    // Ajuste aqui se o controle ficar invertido no seu celular.
+    const MOBILE_MAX_TILT = 32;       // Inclinação máxima considerada como 100% do comando.
+    const MOBILE_DEADZONE = 4;        // Zona morta em graus para evitar tremor.
+    const MOBILE_YAW_RATE = 2.1;      // Velocidade de yaw com aceleração máxima.
+    const MOBILE_PITCH_RATE = 1.8;    // Velocidade de pitch com aceleração máxima.
+    const MOBILE_YAW_SIGN = -1;       // Mude para 1 se a direção ficar invertida.
+    const MOBILE_PITCH_SIGN = -1;     // Mude para 1 se o pitch ficar invertido.
+
+    let scene, camera, renderer;
+    let plane, propeller;
+
+    const player = new THREE.Vector3(0, 120, 0);
+    let yaw = 0;
+    let pitch = 0.06;
+    let targetYaw = 0;
+    let targetPitch = 0.06;
+    let bankVisual = 0;
+
+    let speed = 80;
+    let distance = 0;
+    let score = 0;
+    let gameOver = false;
+    let paused = false;
+    let turboButtonActive = false;
+
+    let mobileControlsActive = false;
+    let orientationEnabling = false;
+    let hasOrientation = false;
+    let needsCalibration = false;
+
+    let smoothBeta = 0;
+    let smoothGamma = 0;
+    let baseBeta = 0;
+    let baseGamma = 0;
+
+    const keys = {};
+    const chunks = new Map();
+    const collected = new Set();
+
+    const clock = new THREE.Clock();
+    const forward = new THREE.Vector3();
+    const cameraTarget = new THREE.Vector3();
+    const tmp1 = new THREE.Vector3();
+    const tmp2 = new THREE.Vector3();
+    const tmp3 = new THREE.Vector3();
+
+    const terrainMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.95,
+      metalness: 0.0
+    });
+
+    const trunkGeo = new THREE.CylinderGeometry(0.35, 0.55, 4, 6);
+    const leafGeo = new THREE.ConeGeometry(2.4, 7.5, 7);
+    const starGeo = new THREE.OctahedronGeometry(1.8, 0);
+    const ringGeo = new THREE.TorusGeometry(12, 1.6, 10, 30);
+    const cloudGeo = new THREE.SphereGeometry(1, 8, 6);
+
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: 0x724326,
+      roughness: 1
+    });
+
+    const leafMat = new THREE.MeshStandardMaterial({
+      color: 0x2f7f3d,
+      roughness: 1
+    });
+
+    const starMat = new THREE.MeshStandardMaterial({
+      color: 0xffd54d,
+      emissive: 0xff9500,
+      emissiveIntensity: 0.9,
+      roughness: 0.4
+    });
+
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0x00d8ff,
+      emissive: 0x0093b0,
+      emissiveIntensity: 0.9,
+      roughness: 0.3,
+      side: THREE.DoubleSide
+    });
+
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 1,
+      transparent: true,
+      opacity: 0.88
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const code = event.code;
+
+      if (
+        [
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "Space",
+          "KeyW",
+          "KeyA",
+          "KeyS",
+          "KeyD",
+          "ShiftLeft",
+          "ShiftRight"
+        ].includes(code)
+      ) {
+        event.preventDefault();
+      }
+
+      if (code === "Space" && event.repeat) {
+        return;
+      }
+
+      keys[code] = true;
+
+      if (code === "Space") {
+        if (gameOver) {
+          restart();
+        } else if (paused) {
+          resume();
+        } else {
+          pause();
+        }
+      }
+    });
+
+    document.addEventListener("keyup", (event) => {
+      keys[event.code] = false;
+    });
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    pauseBtn.addEventListener("click", () => {
+      if (gameOver) return;
+      if (paused) resume();
+      else pause();
+    });
+
+    calibrateBtn.addEventListener("click", () => {
+      calibrateMobile();
+    });
+
+    restartBtn.addEventListener("click", () => {
+      restart();
+    });
+
+    turboBtn.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      turboButtonActive = true;
+    }, { passive: false });
+
+    turboBtn.addEventListener("pointerleave", () => {
+      turboButtonActive = false;
+    });
+
+    window.addEventListener("pointerup", () => {
+      turboButtonActive = false;
+    });
+
+    window.addEventListener("pointercancel", () => {
+      turboButtonActive = false;
+    });
+
+    init();
+
+    if (isMobile) {
+      startMobileControls();
+    }
+
+    animate();
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x76b5f5);
+      scene.fog = new THREE.Fog(0x76b5f5, 130, 700);
+
+      camera = new THREE.PerspectiveCamera(
+        65,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1200
+      );
+      camera.position.set(0, 127, -18);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      const hemi = new THREE.HemisphereLight(0xc7ddff, 0x2a2a1c, 0.95);
+      scene.add(hemi);
+
+      const sun = new THREE.DirectionalLight(0xffffff, 1.15);
+      sun.position.set(120, 240, 80);
+      scene.add(sun);
+
+      buildPlane();
+      ensureChunks();
+    }
+
+    function buildPlane() {
+      plane = new THREE.Group();
+
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: 0xe9ebf2,
+        roughness: 0.55,
+        metalness: 0.15
+      });
+
+      const redMat = new THREE.MeshStandardMaterial({
+        color: 0xf2562b,
+        roughness: 0.45,
+        metalness: 0.15
+      });
+
+      const darkMat = new THREE.MeshStandardMaterial({
+        color: 0x222831,
+        roughness: 0.4,
+        metalness: 0.25
+      });
+
+      const fuselageGeo = new THREE.CylinderGeometry(0.35, 0.52, 6, 16);
+      fuselageGeo.rotateX(Math.PI / 2);
+      const fuselage = new THREE.Mesh(fuselageGeo, bodyMat);
+      plane.add(fuselage);
+
+      const noseGeo = new THREE.ConeGeometry(0.45, 1.5, 16);
+      noseGeo.rotateX(Math.PI / 2);
+      const nose = new THREE.Mesh(noseGeo, redMat);
+      nose.position.z = 3.25;
+      plane.add(nose);
+
+      const wingGeo = new THREE.BoxGeometry(11.5, 0.22, 1.9);
+      const wing = new THREE.Mesh(wingGeo, redMat);
+      wing.position.set(0, 0, 0.4);
+      plane.add(wing);
+
+      const tailGeo = new THREE.BoxGeometry(3.4, 0.18, 1.15);
+      const tail = new THREE.Mesh(tailGeo, bodyMat);
+      tail.position.set(0, 0, -2.55);
+      plane.add(tail);
+
+      const finGeo = new THREE.BoxGeometry(0.17, 1.65, 1.35);
+      const fin = new THREE.Mesh(finGeo, redMat);
+      fin.position.set(0, 0.82, -2.45);
+      plane.add(fin);
+
+      const cockpitGeo = new THREE.SphereGeometry(0.36, 14, 12);
+      const cockpit = new THREE.Mesh(cockpitGeo, darkMat);
+      cockpit.position.set(0, 0.44, 0.9);
+      plane.add(cockpit);
+
+      propeller = new THREE.Group();
+      propeller.position.z = 3.85;
+
+      const hubGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.45, 10);
+      hubGeo.rotateX(Math.PI / 2);
+      const hub = new THREE.Mesh(hubGeo, darkMat);
+      propeller.add(hub);
+
+      const bladeGeo = new THREE.BoxGeometry(0.28, 4.1, 0.07);
+
+      const blade1 = new THREE.Mesh(bladeGeo, darkMat);
+      blade1.rotation.z = 0;
+      propeller.add(blade1);
+
+      const blade2 = new THREE.Mesh(bladeGeo, darkMat);
+      blade2.rotation.z = Math.PI / 2;
+      propeller.add(blade2);
+
+      plane.add(propeller);
+
+      plane.position.copy(player);
+      plane.quaternion.setFromEuler(
+        new THREE.Euler(-pitch, yaw, 0, "YXZ")
+      );
+
+      scene.add(plane);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const dt = Math.min(clock.getDelta(), 0.05);
+
+      if (!gameOver && !paused) {
+        update(dt);
+        ensureChunks();
+        checkCollectibles(dt);
+        updateHUD();
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    function update(dt) {
+      const boost = keys.ShiftLeft || keys.ShiftRight || turboButtonActive;
+      const desiredSpeed = boost ? 152 : 82;
+
+      speed += (desiredSpeed - speed) * Math.min(1, dt * 2.2);
+      speed = clamp(speed, 38, 180);
+
+      // Controles por teclado com a inversão que você pediu.
+      if (keys.ArrowRight || keys.KeyD) targetYaw -= 1.12 * dt;
+      if (keys.ArrowLeft || keys.KeyA) targetYaw += 1.12 * dt;
+
+      if (keys.ArrowDown || keys.KeyS) targetPitch += 1.05 * dt;
+      if (keys.ArrowUp || keys.KeyW) targetPitch -= 1.05 * dt;
+
+      if (isMobile && mobileControlsActive && hasOrientation) {
+        applyMobileControls(dt);
+      }
+
+      targetPitch = clamp(targetPitch, -1.18, 1.18);
+
+      yaw += (targetYaw - yaw) * Math.min(1, dt * 4.5);
+      pitch += (targetPitch - pitch) * Math.min(1, dt * 4.5);
+
+      const yawForMath = wrapAngle(yaw);
+      const cp = Math.cos(pitch);
+
+      forward.set(
+        Math.sin(yawForMath) * cp,
+        Math.sin(pitch),
+        Math.cos(yawForMath) * cp
+      );
+
+      player.addScaledVector(forward, speed * dt);
+      distance += speed * dt;
+
+      const bankTarget = clamp((targetYaw - yaw) * 7, -0.78, 0.78);
+      bankVisual += (bankTarget - bankVisual) * Math.min(1, dt * 4);
+
+      plane.position.copy(player);
+      plane.quaternion.setFromEuler(
+        new THREE.Euler(-pitch, yawForMath, -bankVisual, "YXZ")
+      );
+
+      propeller.rotation.z += dt * 42;
+
+      cameraTarget.copy(player);
+      cameraTarget.addScaledVector(forward, -18);
+      cameraTarget.y += 7;
+
+      cameraTarget.y = Math.max(
+        cameraTarget.y,
+        heightAt(cameraTarget.x, cameraTarget.z) + 5
+      );
+
+      camera.position.lerp(cameraTarget, 1 - Math.exp(-dt * 4));
+      camera.lookAt(player);
+
+      const ground = heightAt(player.x, player.z);
+
+      if (player.y <= ground + 3.5) {
+        player.y = ground + 3.5;
+        plane.position.copy(player);
+        endGame();
+      }
+    }
+
+    function applyMobileControls(dt) {
+      const gammaDelta = clamp(
+        normalizeDeg180(smoothGamma - baseGamma),
+        -MOBILE_MAX_TILT,
+        MOBILE_MAX_TILT
+      );
+
+      const betaDelta = clamp(
+        normalizeDeg180(smoothBeta - baseBeta),
+        -MOBILE_MAX_TILT,
+        MOBILE_MAX_TILT
+      );
+
+      let yawInput = 0;
+      if (gammaDelta > MOBILE_DEADZONE) {
+        yawInput = gammaDelta - MOBILE_DEADZONE;
+      } else if (gammaDelta < -MOBILE_DEADZONE) {
+        yawInput = gammaDelta + MOBILE_DEADZONE;
+      }
+
+      let pitchInput = 0;
+      if (betaDelta > MOBILE_DEADZONE) {
+        pitchInput = betaDelta - MOBILE_DEADZONE;
+      } else if (betaDelta < -MOBILE_DEADZONE) {
+        pitchInput = betaDelta + MOBILE_DEADZONE;
+      }
+
+      if (yawInput !== 0) {
+        targetYaw += MOBILE_YAW_SIGN * (yawInput / MOBILE_MAX_TILT) * MOBILE_YAW_RATE * dt;
+      }
+
+      if (pitchInput !== 0) {
+        targetPitch += MOBILE_PITCH_SIGN * (pitchInput / MOBILE_MAX_TILT) * MOBILE_PITCH_RATE * dt;
+      }
+    }
+
+    function updateHUD() {
+      scoreEl.textContent = `Pontos: ${score}`;
+      hudEl.textContent =
+        `Velocidade: ${Math.round(speed)} | ` +
+        `Altitude: ${Math.round(player.y)} | ` +
+        `Distância: ${Math.round(distance)} m`;
+    }
+
+    function ensureChunks() {
+      const pcx = Math.floor(player.x / CHUNK);
+      const pcz = Math.floor(player.z / CHUNK);
+
+      for (let x = pcx - VIEW; x <= pcx + VIEW; x++) {
+        for (let z = pcz - VIEW; z <= pcz + VIEW; z++) {
+          createChunk(x, z);
+        }
+      }
+
+      const toRemove = [];
+
+      for (const [key, chunk] of chunks.entries()) {
+        if (Math.abs(chunk.cx - pcx) > VIEW + 2 || Math.abs(chunk.cz - pcz) > VIEW + 2) {
+          toRemove.push(key);
+        }
+      }
+
+      for (const key of toRemove) {
+        const chunk = chunks.get(key);
+
+        if (!chunk) continue;
+
+        chunks.delete(key);
+        scene.remove(chunk.group);
+        chunk.terrain.geometry.dispose();
+      }
+    }
+
+    function createChunk(cx, cz) {
+      const key = `${cx},${cz}`;
+      if (chunks.has(key)) return;
+
+      const group = new THREE.Group();
+      group.position.set((cx + 0.5) * CHUNK, 0, (cz + 0.5) * CHUNK);
+
+      const geo = new THREE.PlaneGeometry(CHUNK, CHUNK, 14, 14);
+      geo.rotateX(-Math.PI / 2);
+
+      const pos = geo.attributes.position;
+      const colors = new Float32Array(pos.count * 3);
+
+      for (let i = 0; i < pos.count; i++) {
+        const lx = pos.getX(i);
+        const lz = pos.getZ(i);
+
+        const wx = group.position.x + lx;
+        const wz = group.position.z + lz;
+
+        const h = heightAt(wx, wz);
+        pos.setY(i, h);
+
+        const color = new THREE.Color();
+
+        if (h > 92) color.setHex(0xf5f7ff);
+        else if (h > 78) color.setHex(0x9d7a55);
+        else if (h > 62) color.setHex(0x4d8a39);
+        else color.setHex(0x74ba55);
+
+        color.offsetHSL(
+          (hash2(wx * 0.25, wz * 0.25) - 0.5) * 0.02,
+          0,
+          (hash3(cx, cz, i) - 0.5) * 0.04
+        );
+
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      geo.computeVertexNormals();
+
+      const terrain = new THREE.Mesh(geo, terrainMaterial);
+      group.add(terrain);
+
+      const collectibles = [];
+
+      // Estrelas
+      const starCount = 1 + Math.floor(hash3(cx, cz, 1) * 3);
+
+      for (let i = 0; i < starCount; i++) {
+        const id = `star:${cx},${cz},${i}`;
+        if (collected.has(id)) continue;
+
+        const lx = (hash3(cx, cz, 100 + i * 17) - 0.5) * CHUNK * 0.85;
+        const lz = (hash3(cx, cz, 200 + i * 31) - 0.5) * CHUNK * 0.85;
+
+        const wx = group.position.x + lx;
+        const wz = group.position.z + lz;
+
+        const ly = heightAt(wx, wz) + 18 + hash3(cx, cz, 300 + i * 53) * 32;
+
+        const mesh = new THREE.Mesh(starGeo, starMat);
+        mesh.position.set(lx, ly, lz);
+        mesh.scale.setScalar(1.6 + hash3(cx, cz, 400 + i * 11) * 1.2);
+
+        group.add(mesh);
+        collectibles.push({ mesh, id, type: "star" });
+      }
+
+      // Argolas bônus
+      const ringCount = hash3(cx, cz, 7) > 0.5 ? 1 : 0;
+
+      for (let i = 0; i < ringCount; i++) {
+        const id = `ring:${cx},${cz},${i}`;
+        if (collected.has(id)) continue;
+
+        const lx = (hash3(cx, cz, 500 + i * 23) - 0.5) * CHUNK * 0.8;
+        const lz = (hash3(cx, cz, 600 + i * 29) - 0.5) * CHUNK * 0.8;
+
+        const wx = group.position.x + lx;
+        const wz = group.position.z + lz;
+
+        const ly = heightAt(wx, wz) + 34 + hash3(cx, cz, 700 + i * 37) * 48;
+
+        const ringYaw = hash3(cx, cz, 800 + i * 41) * Math.PI * 2;
+
+        const mesh = new THREE.Mesh(ringGeo, ringMat);
+        mesh.position.set(lx, ly, lz);
+        mesh.rotation.y = ringYaw;
+
+        const normal = new THREE.Vector3(
+          Math.sin(ringYaw),
+          0,
+          Math.cos(ringYaw)
+        );
+
+        group.add(mesh);
+        collectibles.push({ mesh, id, type: "ring", normal });
+      }
+
+      // Árvores
+      const treeCount = Math.floor(hash3(cx, cz, 13) * 4);
+
+      for (let i = 0; i < treeCount; i++) {
+        const lx = (hash3(cx, cz, 900 + i * 19) - 0.5) * CHUNK * 0.9;
+        const lz = (hash3(cx, cz, 1000 + i * 27) - 0.5) * CHUNK * 0.9;
+
+        const wx = group.position.x + lx;
+        const wz = group.position.z + lz;
+
+        const h = heightAt(wx, wz);
+
+        const tree = new THREE.Group();
+        tree.position.set(lx, h, lz);
+
+        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+        trunk.position.y = 2.1;
+        tree.add(trunk);
+
+        const leaf = new THREE.Mesh(leafGeo, leafMat);
+        leaf.position.y = 7.2;
+        tree.add(leaf);
+
+        tree.scale.setScalar(0.8 + hash3(cx, cz, 1100 + i * 13) * 0.8);
+        group.add(tree);
+      }
+
+      // Nuvens
+      const cloudCount = Math.floor(hash3(cx, cz, 19) * 3);
+
+      for (let i = 0; i < cloudCount; i++) {
+        const lx = (hash3(cx, cz, 1200 + i * 17) - 0.5) * CHUNK * 0.95;
+        const lz = (hash3(cx, cz, 1300 + i * 23) - 0.5) * CHUNK * 0.95;
+
+        const wx = group.position.x + lx;
+        const wz = group.position.z + lz;
+
+        const cloud = new THREE.Group();
+        cloud.position.set(lx, heightAt(wx, wz) + 78 + hash3(cx, cz, 1400 + i * 11) * 72, lz);
+
+        for (let j = 0; j < 3; j++) {
+          const part = new THREE.Mesh(cloudGeo, cloudMat);
+          part.position.set(
+            (hash3(cx, cz, 1500 + i * 7 + j) - 0.5) * 14,
+            (hash3(cx, cz, 1600 + i * 7 + j) - 0.5) * 5,
+            (hash3(cx, cz, 1700 + i * 7 + j) - 0.5) * 14
+          );
+          part.scale.setScalar(4 + hash3(cx, cz, 1800 + i * 7 + j) * 8);
+          cloud.add(part);
+        }
+
+        group.add(cloud);
+      }
+
+      chunks.set(key, {
+        group,
+        terrain,
+        collectibles,
+        cx,
+        cz
+      });
+
+      scene.add(group);
+    }
+
+    function checkCollectibles(dt) {
+      for (const chunk of chunks.values()) {
+        let changed = false;
+
+        for (const item of chunk.collectibles) {
+          if (item.collected) continue;
+
+          tmp1.copy(item.mesh.position).add(chunk.group.position);
+
+          if (item.type === "star") {
+            item.mesh.rotation.y += dt * 2.2;
+
+            if (tmp1.distanceTo(player) < 9) {
+              collect(item);
+              changed = true;
+            }
+          } else {
+            tmp2.copy(player).sub(tmp1);
+
+            const along = tmp2.dot(item.normal);
+            tmp3.copy(tmp2).addScaledVector(item.normal, -along);
+
+            if (Math.abs(along) < 8 && tmp3.length() < 10) {
+              collect(item);
+              changed = true;
+            }
+          }
+        }
+
+        if (changed) {
+          chunk.collectibles = chunk.collectibles.filter((item) => !item.collected);
+        }
+      }
+    }
+
+    function collect(item) {
+      item.collected = true;
+      collected.add(item.id);
+
+      if (item.mesh.parent) {
+        item.mesh.parent.remove(item.mesh);
+      }
+
+      score += item.type === "star" ? 10 : 50;
+    }
+
+    function showOverlay(text) {
+      overlayEl.innerHTML = text;
+      overlayEl.classList.remove("hidden");
+    }
+
+    function hideOverlay() {
+      overlayEl.classList.add("hidden");
+    }
+
+    function updatePauseButton() {
+      if (!pauseBtn) return;
+      pauseBtn.textContent = paused ? "▶" : "⏸";
+      pauseBtn.setAttribute("aria-label", paused ? "Retomar" : "Pausar");
+    }
+
+    function pause() {
+      if (gameOver || paused) return;
+
+      paused = true;
+      updatePauseButton();
+
+      showOverlay(`
+        Jogo pausado.<br><br>
+        Pressione Espaço ou toque em ▶ para continuar.
+      `);
+    }
+
+    function resume() {
+      if (!paused) return;
+      if (isMobile && !document.body.classList.contains("ready")) return;
+
+      paused = false;
+      updatePauseButton();
+      hideOverlay();
+    }
+
+    function endGame() {
+      gameOver = true;
+      paused = false;
+      updatePauseButton();
+
+      showOverlay(`
+        Você bateu no terreno.<br><br>
+        Pontos finais: ${score}<br>
+        Distância: ${Math.round(distance)} m
+      `);
+
+      restartBtn.classList.add("visible");
+    }
+
+    function restart() {
+      restartBtn.classList.remove("visible");
+
+      for (const chunk of chunks.values()) {
+        scene.remove(chunk.group);
+        chunk.terrain.geometry.dispose();
+      }
+
+      chunks.clear();
+      collected.clear();
+
+      player.set(0, 120, 0);
+
+      yaw = 0;
+      pitch = 0.06;
+      targetYaw = 0;
+      targetPitch = 0.06;
+      bankVisual = 0;
+
+      speed = 80;
+      distance = 0;
+      score = 0;
+
+      gameOver = false;
+      paused = false;
+      updatePauseButton();
+
+      plane.position.copy(player);
+      plane.quaternion.setFromEuler(
+        new THREE.Euler(-pitch, yaw, 0, "YXZ")
+      );
+
+      if (propeller) {
+        propeller.rotation.z = 0;
+      }
+
+      camera.position.set(0, 127, -18);
+
+      hideOverlay();
+      ensureChunks();
+      updateHUD();
+    }
+
+    function startMobileControls() {
+      paused = true;
+      updatePauseButton();
+
+      if (!("DeviceOrientationEvent" in window)) {
+        showOverlay(`
+          Acelerômetro indisponível neste dispositivo.<br><br>
+          Use um smartphone compatível com DeviceOrientation.
+        `);
+        return;
+      }
+
+      showOverlay(`
+        Toque na tela para ativar os controles por inclinação.<br><br>
+        No iPhone/iPad, o navegador pedirá permissão de movimento.
+      `);
+
+      window.addEventListener("pointerdown", attemptEnableOrientation, { passive: true });
+    }
+
+    async function attemptEnableOrientation() {
+      if (orientationEnabling || mobileControlsActive) {
+        if (mobileControlsActive && needsCalibration) {
+          showOverlay(`
+            Acelerômetro ativado.<br><br>
+            Segure o celular na posição de pilotagem.
+            O jogo começará automaticamente após a calibração.
+          `);
+        }
+        return;
+      }
+
+      orientationEnabling = true;
+      const granted = await enableMobileOrientation();
+      orientationEnabling = false;
+
+      if (granted) {
+        showOverlay(`
+          Acelerômetro ativado.<br><br>
+          Segure o celular na posição de pilotagem.
+          O jogo começará automaticamente após a calibração.
+        `);
+      } else {
+        showOverlay(`
+          Não foi possível ativar o acelerômetro.<br><br>
+          Toque novamente para tentar.
+        `);
+      }
+    }
+
+    async function enableMobileOrientation() {
+      if (mobileControlsActive) return true;
+      if (!("DeviceOrientationEvent" in window)) return false;
+
+      if (typeof DeviceOrientationEvent.requestPermission === "function") {
+        try {
+          const result = await DeviceOrientationEvent.requestPermission();
+          if (result !== "granted") return false;
+        } catch (error) {
+          return false;
+        }
+      }
+
+      window.addEventListener("deviceorientation", onDeviceOrientation);
+      mobileControlsActive = true;
+      needsCalibration = true;
+      return true;
+    }
+
+    function onDeviceOrientation(event) {
+      if (event.beta === null || event.gamma === null) return;
+
+      const rawBeta = normalizeDeg180(event.beta);
+      const rawGamma = normalizeDeg180(event.gamma);
+
+      if (!hasOrientation) {
+        smoothBeta = rawBeta;
+        smoothGamma = rawGamma;
+        hasOrientation = true;
+      } else {
+        smoothBeta = lerpDeg(smoothBeta, rawBeta, 0.22);
+        smoothGamma = lerpDeg(smoothGamma, rawGamma, 0.22);
+      }
+
+      if (mobileControlsActive && needsCalibration) {
+        calibrateMobile();
+      }
+    }
+
+    function calibrateMobile() {
+      if (!hasOrientation || !mobileControlsActive) return;
+
+      baseBeta = smoothBeta;
+      baseGamma = smoothGamma;
+
+      const wasInitialCalibration = needsCalibration;
+      needsCalibration = false;
+
+      if (wasInitialCalibration) {
+        document.body.classList.add("ready");
+        window.removeEventListener("pointerdown", attemptEnableOrientation);
+        resume();
+      }
+    }
+
+    function heightAt(x, z) {
+      const n = fbm(x * 0.012, z * 0.012);
+      const shaped = Math.pow(n, 1.8);
+
+      return 35 + shaped * 70;
+    }
+
+    function fbm(x, y) {
+      let total = 0;
+      let amp = 0.5;
+      let freq = 1;
+
+      for (let i = 0; i < 4; i++) {
+        total += valueNoise(x * freq, y * freq) * amp;
+        freq *= 2;
+        amp *= 0.5;
+      }
+
+      return total;
+    }
+
+    function valueNoise(x, y) {
+      const xi = Math.floor(x);
+      const yi = Math.floor(y);
+
+      const xf = x - xi;
+      const yf = y - yi;
+
+      const a = hash2(xi, yi);
+      const b = hash2(xi + 1, yi);
+      const c = hash2(xi, yi + 1);
+      const d = hash2(xi + 1, yi + 1);
+
+      const u = smoothstep(xf);
+      const v = smoothstep(yf);
+
+      const ab = a + (b - a) * u;
+      const cd = c + (d - c) * u;
+
+      return ab + (cd - ab) * v;
+    }
+
+    function smoothstep(t) {
+      return t * t * (3 - 2 * t);
+    }
+
+    function hash2(x, y) {
+      const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+      return n - Math.floor(n);
+    }
+
+    function hash3(x, y, z) {
+      const n = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+      return n - Math.floor(n);
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function wrapAngle(a) {
+      a = (a + Math.PI) % (Math.PI * 2);
+      if (a < 0) a += Math.PI * 2;
+      return a - Math.PI;
+    }
+
+    function normalizeDeg180(value) {
+      value = (value + 180) % 360;
+      if (value < 0) value += 360;
+      return value - 180;
+    }
+
+    function lerpDeg(a, b, t) {
+      return normalizeDeg180(a + normalizeDeg180(b - a) * t);
+    }
+  </script>
+</body>
+</html>
