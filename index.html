@@ -82,12 +82,27 @@
       padding: 0 12px;
       font-size: 22px;
       line-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     #calibrateBtn {
       font-size: 13px;
       font-weight: 800;
-      line-height: 44px;
+    }
+
+    #fullscreenBtn {
+      position: fixed;
+      top: 10px;
+      right: 12px;
+      width: 46px;
+      height: 44px;
+      font-size: 22px;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     #turboBtn {
@@ -169,7 +184,7 @@
     <div id="score">Pontos: 0</div>
     <div id="hud">Velocidade: 0 | Altitude: 0 | Distância: 0</div>
     <div class="small">
-      No celular: ative o acelerômetro, use a inclinação do aparelho para controlar o avião e toque em TURBO.
+      No celular: toque para ativar aceleração/inclinação. Se o Brave bloquear sensores, o controle por toque será ativado automaticamente.
       No PC: A/D, W/S, Shift e Espaço.
     </div>
   </div>
@@ -179,6 +194,7 @@
     <button id="calibrateBtn" class="btn icon-btn" aria-label="Calibrar acelerômetro">Calibrar</button>
   </div>
 
+  <button id="fullscreenBtn" class="btn" aria-label="Tela cheia">⛶</button>
   <button id="turboBtn" class="btn" aria-label="Turbo">TURBO</button>
   <button id="restartBtn" class="btn">REINICIAR</button>
 
@@ -197,6 +213,7 @@
     const calibrateBtn = document.getElementById("calibrateBtn");
     const turboBtn = document.getElementById("turboBtn");
     const restartBtn = document.getElementById("restartBtn");
+    const fullscreenBtn = document.getElementById("fullscreenBtn");
 
     const hasTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
     const hasOrientationSupport = ("DeviceOrientationEvent" in window);
@@ -207,13 +224,19 @@
       document.body.classList.add("mobile");
     }
 
-    // Ajuste aqui se o controle ficar invertido no seu celular.
-    const MOBILE_MAX_TILT = 32;       // Inclinação máxima considerada como 100% do comando.
-    const MOBILE_DEADZONE = 4;        // Zona morta em graus para evitar tremor.
-    const MOBILE_YAW_RATE = 2.1;      // Velocidade de yaw com aceleração máxima.
-    const MOBILE_PITCH_RATE = 1.8;    // Velocidade de pitch com aceleração máxima.
-    const MOBILE_YAW_SIGN = -1;       // Mude para 1 se a direção ficar invertida.
-    const MOBILE_PITCH_SIGN = -1;     // Mude para 1 se o pitch ficar invertido.
+    const MOBILE_MAX_TILT = 32;
+    const MOBILE_DEADZONE = 4;
+    const MOBILE_YAW_RATE = 2.1;
+    const MOBILE_PITCH_RATE = 1.8;
+
+    const MOBILE_YAW_SIGN = -1;
+    const MOBILE_PITCH_SIGN = 1; // Mude para 1 se o pitch ficar invertido.
+
+    const TOUCH_DEADZONE = 0.18;
+    const TOUCH_YAW_RATE = 2.1;
+    const TOUCH_PITCH_RATE = 1.5;
+    const TOUCH_YAW_SIGN = -1;
+    const TOUCH_PITCH_SIGN = 1;
 
     let scene, camera, renderer;
     let plane, propeller;
@@ -241,6 +264,18 @@
     let smoothGamma = 0;
     let baseBeta = 0;
     let baseGamma = 0;
+
+    let sensorMode = null; // null, "orientation" ou "motion"
+    let motionControlsActive = false;
+    let lastSensorDebug = "";
+
+    let touchSteerActive = false;
+    let touchPointerId = null;
+    let touchNX = 0;
+    let touchNY = 0;
+    let orientationAttemptFailed = false;
+    let orientationTimeout = null;
+    let touchSteerEventsAttached = false;
 
     const keys = {};
     const chunks = new Map();
@@ -340,6 +375,8 @@
     });
 
     window.addEventListener("resize", () => {
+      if (!camera || !renderer) return;
+
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -374,6 +411,15 @@
 
     window.addEventListener("pointercancel", () => {
       turboButtonActive = false;
+    });
+
+    fullscreenBtn.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    }, { passive: true });
+
+    fullscreenBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      toggleFullscreen();
     });
 
     init();
@@ -515,7 +561,6 @@
       speed += (desiredSpeed - speed) * Math.min(1, dt * 2.2);
       speed = clamp(speed, 38, 180);
 
-      // Controles por teclado com a inversão que você pediu.
       if (keys.ArrowRight || keys.KeyD) targetYaw -= 1.12 * dt;
       if (keys.ArrowLeft || keys.KeyA) targetYaw += 1.12 * dt;
 
@@ -524,6 +569,10 @@
 
       if (isMobile && mobileControlsActive && hasOrientation) {
         applyMobileControls(dt);
+      }
+
+      if (touchSteerActive) {
+        applyTouchControls(dt);
       }
 
       targetPitch = clamp(targetPitch, -1.18, 1.18);
@@ -607,6 +656,21 @@
 
       if (pitchInput !== 0) {
         targetPitch += MOBILE_PITCH_SIGN * (pitchInput / MOBILE_MAX_TILT) * MOBILE_PITCH_RATE * dt;
+      }
+    }
+
+    function applyTouchControls(dt) {
+      const x = touchNX;
+      const y = touchNY;
+
+      if (Math.abs(x) > TOUCH_DEADZONE) {
+        const strength = (Math.abs(x) - TOUCH_DEADZONE) / (1 - TOUCH_DEADZONE);
+        targetYaw += TOUCH_YAW_SIGN * x * strength * TOUCH_YAW_RATE * dt;
+      }
+
+      if (Math.abs(y) > TOUCH_DEADZONE) {
+        const strength = (Math.abs(y) - TOUCH_DEADZONE) / (1 - TOUCH_DEADZONE);
+        targetPitch += TOUCH_PITCH_SIGN * y * strength * TOUCH_PITCH_RATE * dt;
       }
     }
 
@@ -696,7 +760,6 @@
 
       const collectibles = [];
 
-      // Estrelas
       const starCount = 1 + Math.floor(hash3(cx, cz, 1) * 3);
 
       for (let i = 0; i < starCount; i++) {
@@ -719,7 +782,6 @@
         collectibles.push({ mesh, id, type: "star" });
       }
 
-      // Argolas bônus
       const ringCount = hash3(cx, cz, 7) > 0.5 ? 1 : 0;
 
       for (let i = 0; i < ringCount; i++) {
@@ -750,7 +812,6 @@
         collectibles.push({ mesh, id, type: "ring", normal });
       }
 
-      // Árvores
       const treeCount = Math.floor(hash3(cx, cz, 13) * 4);
 
       for (let i = 0; i < treeCount; i++) {
@@ -777,7 +838,6 @@
         group.add(tree);
       }
 
-      // Nuvens
       const cloudCount = Math.floor(hash3(cx, cz, 19) * 3);
 
       for (let i = 0; i < cloudCount; i++) {
@@ -954,77 +1014,176 @@
       updateHUD();
     }
 
+    function toggleFullscreen() {
+      const doc = document;
+      const canFullscreen = doc.fullscreenEnabled || doc.webkitFullscreenEnabled;
+
+      if (!canFullscreen) {
+        showOverlay(`
+          Tela cheia indisponível neste navegador.<br><br>
+          Use um navegador compatível com fullscreen.
+        `);
+        setTimeout(hideOverlay, 2200);
+        return;
+      }
+
+      const isFullscreen =
+        doc.fullscreenElement ||
+        doc.webkitFullscreenElement ||
+        doc.webkitFullscreenElement;
+
+      try {
+        if (isFullscreen) {
+          if (doc.exitFullscreen) {
+            doc.exitFullscreen();
+          } else if (doc.webkitExitFullscreen) {
+            doc.webkitExitFullscreen();
+          }
+        } else {
+          const el = document.documentElement;
+
+          if (el.requestFullscreen) {
+            el.requestFullscreen();
+          } else if (el.webkitRequestFullscreen) {
+            el.webkitRequestFullscreen();
+          } else if (el.webkitRequestFullScreen) {
+            el.webkitRequestFullScreen();
+          }
+        }
+      } catch (error) {
+        console.warn("Fullscreen failed:", error);
+      }
+    }
+
     function startMobileControls() {
       paused = true;
       updatePauseButton();
 
-      if (!("DeviceOrientationEvent" in window)) {
-        showOverlay(`
-          Acelerômetro indisponível neste dispositivo.<br><br>
-          Use um smartphone compatível com DeviceOrientation.
-        `);
-        return;
-      }
+      attachTouchSteerEvents();
 
       showOverlay(`
-        Toque na tela para ativar os controles por inclinação.<br><br>
-        No iPhone/iPad, o navegador pedirá permissão de movimento.
+        Toque na tela para tentar ativar aceleração/inclinação.<br><br>
+        Se o navegador bloquear sensores, o controle por toque será ativado automaticamente.
       `);
 
       window.addEventListener("pointerdown", attemptEnableOrientation, { passive: true });
     }
 
     async function attemptEnableOrientation() {
-      if (orientationEnabling || mobileControlsActive) {
-        if (mobileControlsActive && needsCalibration) {
+      if (orientationEnabling) return;
+      if (touchSteerActive) return;
+
+      if (orientationAttemptFailed) {
+        enableTouchSteering();
+        return;
+      }
+
+      if (mobileControlsActive) {
+        if (needsCalibration) {
           showOverlay(`
-            Acelerômetro ativado.<br><br>
+            Sensores ativados, mas aguardando calibração.<br><br>
             Segure o celular na posição de pilotagem.
-            O jogo começará automaticamente após a calibração.
           `);
         }
         return;
       }
 
       orientationEnabling = true;
-      const granted = await enableMobileOrientation();
+      const attached = await enableMobileOrientation();
       orientationEnabling = false;
 
-      if (granted) {
+      if (attached) {
         showOverlay(`
-          Acelerômetro ativado.<br><br>
+          Sensores ativados.<br><br>
           Segure o celular na posição de pilotagem.
-          O jogo começará automaticamente após a calibração.
+          O jogo começará após a calibração automática.
         `);
+
+        startOrientationFallbackTimeout();
       } else {
+        orientationAttemptFailed = true;
+
         showOverlay(`
-          Não foi possível ativar o acelerômetro.<br><br>
-          Toque novamente para tentar.
+          O navegador bloqueou o acesso aos sensores.<br><br>
+          ${lastSensorDebug}<br><br>
+          Desative Shields do Brave para este site ou use controle por toque.
         `);
+
+        enableTouchSteering();
       }
     }
 
     async function enableMobileOrientation() {
       if (mobileControlsActive) return true;
-      if (!("DeviceOrientationEvent" in window)) return false;
 
-      if (typeof DeviceOrientationEvent.requestPermission === "function") {
-        try {
-          const result = await DeviceOrientationEvent.requestPermission();
-          if (result !== "granted") return false;
-        } catch (error) {
-          return false;
+      const hasOrientationEvent = "DeviceOrientationEvent" in window;
+      const hasMotionEvent = "DeviceMotionEvent" in window;
+
+      lastSensorDebug =
+        `secure=${window.isSecureContext} | ` +
+        `orientation=${hasOrientationEvent} | ` +
+        `motion=${hasMotionEvent}`;
+
+      console.log("Sensor debug:", lastSensorDebug);
+
+      let orientationGranted = false;
+
+      if (hasOrientationEvent) {
+        if (typeof DeviceOrientationEvent.requestPermission === "function") {
+          try {
+            const result = await DeviceOrientationEvent.requestPermission();
+            orientationGranted = (result === "granted");
+          } catch (error) {
+            orientationGranted = false;
+          }
+        } else {
+          orientationGranted = true;
         }
       }
 
-      window.addEventListener("deviceorientation", onDeviceOrientation);
-      mobileControlsActive = true;
-      needsCalibration = true;
-      return true;
+      let anySensorAttached = false;
+
+      if (orientationGranted) {
+        window.addEventListener("deviceorientation", onDeviceOrientation);
+        window.addEventListener("deviceorientationabsolute", onDeviceOrientation);
+
+        mobileControlsActive = true;
+        needsCalibration = true;
+        anySensorAttached = true;
+      }
+
+      if (hasMotionEvent) {
+        window.addEventListener("devicemotion", onDeviceMotionFallback);
+        motionControlsActive = true;
+
+        if (!mobileControlsActive) {
+          mobileControlsActive = true;
+          needsCalibration = true;
+        }
+
+        anySensorAttached = true;
+      }
+
+      return anySensorAttached;
+    }
+
+    function startOrientationFallbackTimeout() {
+      clearTimeout(orientationTimeout);
+
+      orientationTimeout = setTimeout(() => {
+        if (mobileControlsActive && !hasOrientation && !touchSteerActive) {
+          enableTouchSteering();
+        }
+      }, 2500);
     }
 
     function onDeviceOrientation(event) {
       if (event.beta === null || event.gamma === null) return;
+
+      if (sensorMode === "motion") return;
+
+      clearTimeout(orientationTimeout);
+      sensorMode = "orientation";
 
       const rawBeta = normalizeDeg180(event.beta);
       const rawGamma = normalizeDeg180(event.gamma);
@@ -1037,6 +1196,57 @@
         smoothBeta = lerpDeg(smoothBeta, rawBeta, 0.22);
         smoothGamma = lerpDeg(smoothGamma, rawGamma, 0.22);
       }
+
+      if (mobileControlsActive && needsCalibration) {
+        calibrateMobile();
+      }
+    }
+
+    function onDeviceMotionFallback(event) {
+      const acc = event.accelerationIncludingGravity || event.acceleration;
+
+      if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
+
+      if (sensorMode === "orientation") return;
+
+      let gx = Number(acc.x);
+      let gy = Number(acc.y);
+      let gz = Number(acc.z);
+
+      if (!isFinite(gx) || !isFinite(gy) || !isFinite(gz)) return;
+
+      // Assume que a tela do celular está voltada para o jogador.
+      // Se a tela estiver para baixo, inverte os eixos para manter coerência.
+      if (gz < 0) {
+        gx = -gx;
+        gy = -gy;
+        gz = -gz;
+      }
+
+      const magnitude = Math.hypot(gx, gy, gz);
+
+      // Se não houver gravidade razoável, ignora.
+      if (magnitude < 1.5) return;
+
+      // Estimativa de pitch e roll a partir do acelerômetro.
+      const betaDeg = Math.atan2(-gy, Math.hypot(gx, gz)) * 180 / Math.PI;
+      const gammaDeg = Math.atan2(gx, gz) * 180 / Math.PI;
+
+      const rawBeta = normalizeDeg180(betaDeg);
+      const rawGamma = normalizeDeg180(gammaDeg);
+
+      if (!hasOrientation) {
+        smoothBeta = rawBeta;
+        smoothGamma = rawGamma;
+        hasOrientation = true;
+      } else {
+        smoothBeta = lerpDeg(smoothBeta, rawBeta, 0.25);
+        smoothGamma = lerpDeg(smoothGamma, rawGamma, 0.25);
+      }
+
+      sensorMode = "motion";
+
+      clearTimeout(orientationTimeout);
 
       if (mobileControlsActive && needsCalibration) {
         calibrateMobile();
@@ -1057,6 +1267,92 @@
         window.removeEventListener("pointerdown", attemptEnableOrientation);
         resume();
       }
+    }
+
+    function enableTouchSteering() {
+      if (touchSteerActive) return;
+
+      clearTimeout(orientationTimeout);
+
+      touchSteerActive = true;
+      mobileControlsActive = false;
+      motionControlsActive = false;
+      needsCalibration = false;
+
+      document.body.classList.add("ready");
+
+      window.removeEventListener("pointerdown", attemptEnableOrientation);
+
+      resume();
+
+      showOverlay(`
+        Controle por toque ativado.<br><br>
+        Toque e arraste na tela:<br>
+        direita/esquerda controla yaw<br>
+        cima/baixo controla pitch
+      `);
+
+      setTimeout(hideOverlay, 2500);
+    }
+
+    function attachTouchSteerEvents() {
+      if (!renderer || touchSteerEventsAttached) return;
+
+      touchSteerEventsAttached = true;
+
+      renderer.domElement.addEventListener("pointerdown", onSteerPointerDown, { passive: false });
+      renderer.domElement.addEventListener("pointermove", onSteerPointerMove, { passive: false });
+
+      window.addEventListener("pointerup", onSteerPointerUp);
+      window.addEventListener("pointercancel", onSteerPointerUp);
+    }
+
+    function onSteerPointerDown(event) {
+      if (!touchSteerActive) return;
+
+      if (touchPointerId !== null && event.pointerId !== touchPointerId) return;
+
+      touchPointerId = event.pointerId;
+      updateTouchVector(event);
+
+      event.preventDefault();
+    }
+
+    function onSteerPointerMove(event) {
+      if (!touchSteerActive) return;
+      if (touchPointerId === null || event.pointerId !== touchPointerId) return;
+
+      updateTouchVector(event);
+
+      event.preventDefault();
+    }
+
+    function onSteerPointerUp(event) {
+      if (!touchSteerActive) return;
+
+      if (touchPointerId !== null && event.pointerId !== touchPointerId) return;
+
+      touchPointerId = null;
+      touchNX = 0;
+      touchNY = 0;
+    }
+
+    function updateTouchVector(event) {
+      if (!renderer) return;
+
+      const rect = renderer.domElement.getBoundingClientRect();
+
+      touchNX = clamp(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -1,
+        1
+      );
+
+      touchNY = clamp(
+        1 - ((event.clientY - rect.top) / rect.height) * 2,
+        -1,
+        1
+      );
     }
 
     function heightAt(x, z) {
